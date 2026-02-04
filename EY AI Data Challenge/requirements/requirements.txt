@@ -37,3 +37,9 @@ dask==2024.10.0
 xarray[complete]
 
 numcodecs==0.12.1
+
+tensorflow
+
+xgboost==1.7.6
+
+optuna==3.4.0
