@@ -82,16 +82,21 @@ for TARGET in TARGETS:
     print(f"Feature Importance Analysis for: {TARGET}")
     print(f"{'='*60}")
     
-    # Find model for this target
-    safe_name = re.sub(r"\W+", "_", TARGET)
-    model_path = os.path.join(MODELS_DIR, f"xgb_model_{safe_name}.pkl")
-    
-    if not os.path.exists(model_path):
-        print(f"Warning: Model not found at {model_path}. Skipping {TARGET}.")
+    # Load consolidated global XGBoost multi-output model and extract per-target estimator
+    global_model_path = os.path.join(MODELS_DIR, "xgb_global.pkl")
+    if not os.path.exists(global_model_path):
+        print(f"Warning: Global model not found at {global_model_path}. Skipping {TARGET}.")
         continue
-    
-    print(f"Loading model from {model_path}")
-    model = joblib.load(model_path)
+    print(f"Loading global model from {global_model_path}")
+    global_model = joblib.load(global_model_path)
+
+    # Extract the estimator corresponding to this TARGET
+    try:
+        idx = TARGETS.index(TARGET)
+        model = global_model.estimators_[idx]
+    except Exception as e:
+        print(f"Could not extract estimator for {TARGET}: {e}")
+        continue
     
     # Build features exactly as in generate_submission.py
     print(f"Building features for {TARGET}...")

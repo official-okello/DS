@@ -1,8 +1,4 @@
 #!/usr/bin/env python
-"""
-Run SHAP analysis for all targets and generate interpretable reports.
-Focus on understanding why DRP has low R2.
-"""
 import sys
 import subprocess
 from pathlib import Path

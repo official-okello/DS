@@ -1,13 +1,3 @@
-"""
-Data Quality & Distribution Analysis for Dissolved Reactive Phosphorus (DRP)
-
-Diagnoses why DRP R² is low by examining:
-1. Distribution shape (skewness, sparsity, outliers)
-2. Measurement quality (missing values, consistency)
-3. Temporal patterns and variability
-4. Station-level differences
-"""
-
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -57,7 +47,7 @@ print(f"  IQR: {drp.quantile(0.75) - drp.quantile(0.25):.6f}")
 from scipy.stats import skew, kurtosis as scipy_kurtosis
 skewness = skew(drp)
 kurtosis_val = scipy_kurtosis(drp)
-print(f"\nSkewness: {skewness:.4f} (highly right-skewed: >1.0)")
+print(f"\nSkewness: {skewness:.4f}") # highly right-skewed if skewness >1.0
 print(f"Kurtosis: {kurtosis_val:.4f}")
 
 # ============================================================
@@ -192,7 +182,7 @@ print("KEY INSIGHTS")
 print("="*60)
 print(f"""
 1. DISTRIBUTION:
-   - DRP is highly right-skewed (skewness: {skewness:.2f})
+   - DRP is highly right-skewed (skewness: {skewness:.2f}) # highly right-skewed if skewness >1.0
    - Log-transformation helps but doesn't fully normalize
    - High coefficient of variation ({drp.std()/drp.mean():.2f}) → dispersed signal
    
@@ -202,10 +192,10 @@ print(f"""
    - Zeros/near-zeros: {100*near_zeros/len(drp):.1f}% (sparse signal)
    
 3. WHY R² IS LOW:
-   - ✓ Skewed distribution → violates linear regression assumptions
-   - ✓ Sparse signal (high CV) → hard to predict from features
-   - ✓ Potential outliers → inflate residuals
-   - ✓ Missing domain drivers (nutrient cycling, biological activity)
+   - Skewed distribution → violates linear regression assumptions
+   - Sparse signal (high CV) → hard to predict from features
+   - Potential outliers → inflate residuals
+   - Missing domain drivers (nutrient cycling, biological activity)
    
 4. RECOMMENDED FIXES:
    - Try QUANTILE REGRESSION (e.g., median) instead of MSE

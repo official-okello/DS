@@ -10,6 +10,7 @@ import xgboost as xgb
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 from sklearn.linear_model import QuantileRegressor
+from sklearn.multioutput import MultiOutputRegressor
 import json
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -67,112 +68,155 @@ def prepare_features_for_target(df, target):
     return X, y
 
 # Train models
-print("\n[3/4] TRAINING MODELS FOR EACH TARGET")
+print("\n[3/4] TRAINING CONSOLIDATED MODELS")
 print("-" * 80)
 
-xgb_models = {}
-lgb_models = {}
+# Build training dataset for multi-output models: require rows with all targets present
+df_num = df_engineered.copy()
+for t in TARGETS:
+    if t not in df_num.columns:
+        df_num[t] = np.nan
+
+train_mask = df_num[TARGETS].notna().all(axis=1)
+df_train = df_num.loc[train_mask].reset_index(drop=True)
+
+# Features: numeric columns excluding target columns and identifiers
+drop_cols = ['station_id', 'Sample Date', 'Latitude', 'Longitude']
+X_cols = [c for c in df_train.select_dtypes(include=[np.number]).columns if c not in TARGETS]
+X_train = df_train[X_cols]
+y_train = df_train[TARGETS]
+
+print(f"  Training samples: {X_train.shape[0]} | Features: {X_train.shape[1]}")
+
+# Fill missing feature values with median (robust)
+X_train = X_train.copy()
+medians = X_train.median()
+# Drop columns where median is NaN (no valid values)
+drop_nanmedian = medians[medians.isna()].index.tolist()
+if drop_nanmedian:
+    X_train = X_train.drop(columns=drop_nanmedian)
+    X_cols = [c for c in X_cols if c not in drop_nanmedian]
+    medians = medians.drop(index=drop_nanmedian)
+
+# Fill remaining NaNs with median values
+X_train = X_train.fillna(medians)
+
+# Scale features
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+
+# Train global XGBoost (multi-output)
+from sklearn.multioutput import MultiOutputRegressor as _MOR
+xgb_base = xgb.XGBRegressor(
+    n_estimators=300, max_depth=6, learning_rate=0.05,
+    subsample=0.8, colsample_bytree=0.8,
+    objective="reg:squarederror", random_state=42, n_jobs=-1, verbosity=0
+)
+global_xgb = _MOR(xgb_base)
+global_xgb.fit(X_train_scaled, y_train)
+joblib.dump(global_xgb, MODELS_DIR / "xgb_global.pkl")
+
+# Train global LightGBM (multi-output)
+import lightgbm as lgb
+lgb_base = lgb.LGBMRegressor(
+    n_estimators=300, max_depth=7, learning_rate=0.05,
+    num_leaves=31, subsample=0.8, colsample_bytree=0.8,
+    random_state=42, n_jobs=-1, verbosity=-1
+)
+global_lgb = _MOR(lgb_base)
+global_lgb.fit(X_train_scaled, y_train)
+joblib.dump(global_lgb, MODELS_DIR / "lgb_global.pkl")
+
+# Quantile regressors for Dissolved Reactive Phosphorus (DRP)
 qr_models = {}
-feature_names_per_target = {}
-scalers_per_target = {}
+drp_y = y_train['Dissolved Reactive Phosphorus']
+for q in [0.25, 0.5, 0.75]:
+    qr = QuantileRegressor(quantile=q, alpha=0.01, solver='highs')
+    qr.fit(X_train_scaled, drp_y)
+    qr_models[q] = qr
+    joblib.dump(qr, MODELS_DIR / f"qr_drp_model_q{int(q*100)}.pkl")
+
+# Quick evaluation on train set
+pred_xgb = pd.DataFrame(global_xgb.predict(X_train_scaled), columns=TARGETS)
+pred_lgb = pd.DataFrame(global_lgb.predict(X_train_scaled), columns=TARGETS)
+pred_ensemble = 0.5 * pred_xgb + 0.5 * pred_lgb
+pred_ensemble['Dissolved Reactive Phosphorus'] = (
+    0.4 * pred_xgb['Dissolved Reactive Phosphorus']
+    + 0.35 * pred_lgb['Dissolved Reactive Phosphorus']
+    + 0.25 * qr_models[0.5].predict(X_train_scaled)
+)
+
 results = {}
+for t in TARGETS:
+    r2 = r2_score(y_train[t], pred_ensemble[t])
+    mae = mean_absolute_error(y_train[t], pred_ensemble[t])
+    rmse = np.sqrt(mean_squared_error(y_train[t], pred_ensemble[t]))
+    results[t] = {"r2_ensemble": r2, "mae_ensemble": mae, "rmse": rmse}
+    print(f"  {t}: R²={r2:.4f} | MAE={mae:.4f} | RMSE={rmse:.4f}")
 
-for TARGET in TARGETS:
-    print(f"\n{TARGET}:")
-    safe_target_name = re.sub(r"\W+", "_", TARGET)
-    
-    X, y = prepare_features_for_target(df_engineered, TARGET)
-    valid_idx = ~(X.isna().any(axis=1) | y.isna())
-    X = X[valid_idx]
-    y = y[valid_idx]
-    
-    feature_names_per_target[TARGET] = X.columns.tolist()
-    
-    print(f"  Features: {X.shape[1]} | Samples: {X.shape[0]}")
-    print(f"  Target: mean={y.mean():.2f}, std={y.std():.2f}")
-    
-    # Scale features
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-    scalers_per_target[TARGET] = scaler
-    
-    # XGBoost
-    xgb_model = xgb.XGBRegressor(
-        n_estimators=300, max_depth=6, learning_rate=0.05,
-        subsample=0.8, colsample_bytree=0.8,
-        objective="reg:squarederror", random_state=42, n_jobs=-1, verbosity=0
-    )
-    xgb_model.fit(X_scaled, y)
-    xgb_models[TARGET] = xgb_model
-    
-    y_pred_xgb = xgb_model.predict(X_scaled)
-    r2_xgb = r2_score(y, y_pred_xgb)
-    mae_xgb = mean_absolute_error(y, y_pred_xgb)
-    print(f"  XGBoost R²: {r2_xgb:.4f} | MAE: {mae_xgb:.4f}")
-    
-    joblib.dump(xgb_model, MODELS_DIR / f"xgb_full_model_{safe_target_name}.pkl")
-    
-    # LightGBM
-    import lightgbm as lgb
-    lgb_model = lgb.LGBMRegressor(
-        n_estimators=300, max_depth=7, learning_rate=0.05,
-        num_leaves=31, subsample=0.8, colsample_bytree=0.8,
-        random_state=42, n_jobs=-1, verbosity=-1
-    )
-    lgb_model.fit(X_scaled, y)
-    lgb_models[TARGET] = lgb_model
-    
-    y_pred_lgb = lgb_model.predict(X_scaled)
-    r2_lgb = r2_score(y, y_pred_lgb)
-    mae_lgb = mean_absolute_error(y, y_pred_lgb)
-    print(f"  LightGBM R²: {r2_lgb:.4f} | MAE: {mae_lgb:.4f}")
-    
-    joblib.dump(lgb_model, MODELS_DIR / f"lgb_full_model_{safe_target_name}.pkl")
-    
-    # Quantile Regression for DRP
-    if TARGET == 'Dissolved Reactive Phosphorus':
-        qr_models[TARGET] = {}
-        for q in [0.25, 0.5, 0.75]:
-            qr = QuantileRegressor(quantile=q, alpha=0.01, solver='highs')
-            qr.fit(X_scaled, y)
-            qr_models[TARGET][q] = qr
-            
-            y_pred_qr = qr.predict(X_scaled)
-            r2_qr = r2_score(y, y_pred_qr)
-            print(f"  Quantile {q}: R²={r2_qr:.4f}")
-            
-            joblib.dump(qr, MODELS_DIR / f"qr_full_model_q{int(q*100)}_{safe_target_name}.pkl")
-        
-        y_pred_ensemble = 0.4 * y_pred_xgb + 0.35 * y_pred_lgb + 0.25 * qr_models[TARGET][0.5].predict(X_scaled)
-    else:
-        y_pred_ensemble = 0.5 * y_pred_xgb + 0.5 * y_pred_lgb
-    
-    r2_ensemble = r2_score(y, y_pred_ensemble)
-    mae_ensemble = mean_absolute_error(y, y_pred_ensemble)
-    rmse_ensemble = np.sqrt(mean_squared_error(y, y_pred_ensemble))
-    
-    print(f"  Ensemble R²: {r2_ensemble:.4f} | MAE: {mae_ensemble:.4f} | RMSE: {rmse_ensemble:.4f}")
-    
-    results[TARGET] = {
-        "r2_ensemble": r2_ensemble,
-        "mae_ensemble": mae_ensemble,
-        "rmse_ensemble": rmse_ensemble
-    }
-
-# Save metadata
-print("\n[4/4] SAVING MODELS AND METADATA")
-print("-" * 80)
-
+# Save scaler and metadata
 metadata = {
-    "feature_names": feature_names_per_target,
-    "scalers": scalers_per_target,
+    "feature_names": X_cols,
+    "scaler": scaler,
     "targets": TARGETS,
     "timestamp": pd.Timestamp.now().isoformat()
 }
 joblib.dump(metadata, MODELS_DIR / "pipeline_metadata.pkl")
-print(f"Saved: pipeline_metadata.pkl")
+print("\n[4/4] CREATING SUBMISSION")
+print("-" * 80)
 
-# Save results
+# Load submission template and align dates
+template_path = DATA_DIR / "submission_template.csv"
+df_sub = pd.read_csv(template_path)
+df_sub['Sample Date'] = pd.to_datetime(df_sub['Sample Date'], dayfirst=True, errors='coerce')
+df_engineered['Sample Date'] = pd.to_datetime(df_engineered['Sample Date'], errors='coerce')
+
+# Merge engineered features into submission rows
+df_merge = pd.merge(
+    df_sub,
+    df_engineered,
+    on=['Latitude', 'Longitude', 'Sample Date'],
+    how='left',
+    suffixes=('', '_eng')
+)
+
+# Build test features using X_cols; fill missing with median from training
+X_test = pd.DataFrame(index=df_merge.index)
+for col in X_cols:
+    if col in df_merge.columns:
+        X_test[col] = df_merge[col]
+    else:
+        X_test[col] = np.nan
+
+for col in X_test.columns:
+    if X_test[col].isna().any():
+        median_val = X_train[col].median() if col in X_train.columns else 0.0
+        X_test[col] = X_test[col].fillna(median_val)
+
+# Scale and predict
+X_test_scaled = scaler.transform(X_test)
+pred_xgb_test = pd.DataFrame(global_xgb.predict(X_test_scaled), columns=TARGETS)
+pred_lgb_test = pd.DataFrame(global_lgb.predict(X_test_scaled), columns=TARGETS)
+
+# Ensemble predictions
+pred_test = 0.5 * pred_xgb_test + 0.5 * pred_lgb_test
+# DRP ensemble includes QR median
+pred_test['Dissolved Reactive Phosphorus'] = (
+    0.4 * pred_xgb_test['Dissolved Reactive Phosphorus']
+    + 0.35 * pred_lgb_test['Dissolved Reactive Phosphorus']
+    + 0.25 * qr_models[0.5].predict(X_test_scaled)
+)
+
+# Attach predictions to submission frame in same order/cols as template
+df_out = df_sub.copy()
+for t in TARGETS:
+    df_out[t] = pred_test[t].values
+
+# Save submission as CSV
+submission_path = SUBMISSION_DIR / "submission.csv"
+df_out.to_csv(submission_path, index=False)
+print(f"Saved submission: {submission_path}")
+
 with open(SUBMISSION_DIR / "integrated_pipeline_results.json", 'w') as f:
     json.dump(results, f, indent=2)
 print(f"Saved: integrated_pipeline_results.json")

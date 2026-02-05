@@ -21,8 +21,6 @@ Production-ready ML system for water quality prediction using:
 # Train models
 PYTHONPATH=. ../.venv/bin/python scripts/train_models.py
 
-# Generate submission
-PYTHONPATH=. ../.venv/bin/python scripts/generate_submission.py
 
 # Feature importance analysis
 PYTHONPATH=. ../.venv/bin/python scripts/run_shap_analysis.py
@@ -48,15 +46,16 @@ PYTHONPATH=. ../.venv/bin/python scripts/run_shap_analysis.py
 ```
 scripts/
 ├── train_models.py         # Main pipeline
-├── generate_submission.py  # Predictions
 ├── run_shap_analysis.py    # Feature importance
 ├── analyze_drp_quality.py  # Data diagnostics
 └── run_smoke_test.py       # Validation
 
 outputs/models/
-├── xgb_full_model_*.pkl    # 3 models
-├── lgb_full_model_*.pkl    # 3 models
-├── qr_full_model_*.pkl     # 3 models (DRP)
+├── xgb_global.pkl          # Consolidated multi-output XGBoost
+├── lgb_global.pkl          # Consolidated multi-output LightGBM
+├── qr_drp_model_q25.pkl
+├── qr_drp_model_q50.pkl
+├── qr_drp_model_q75.pkl
 └── pipeline_metadata.pkl   # Scalers & features
 
 submissions/
@@ -81,9 +80,9 @@ pandas, numpy, scikit-learn, xgboost, lightgbm, shap, joblib
 
 ## Files Generated
 
-- `submission_YYYYMMDD_HHMMSS.csv` - 200 predictions
-- `submission_YYYYMMDD_HHMMSS.json` - Metadata
-- 9 trained model files
+- `submissions/submission.csv` - Final predictions (matches submission_template)
+- `submissions/integrated_pipeline_results.json` - Training metrics
+- Consolidated model files in `outputs/models/` (see above)
 - `pipeline_metadata.pkl` - Reproducibility metadata
 - SHAP analysis & visualizations
 
