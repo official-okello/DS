@@ -1,0 +1,140 @@
+{
+  "Total Alkalinity": {
+    "top_features": [
+      {
+        "Feature": "sin_doy",
+        "Importance_%": 12.735493659973145
+      },
+      {
+        "Feature": "cos_month",
+        "Importance_%": 10.469111442565918
+      },
+      {
+        "Feature": "sin_month",
+        "Importance_%": 7.368782997131348
+      },
+      {
+        "Feature": "cos_doy",
+        "Importance_%": 5.122827529907227
+      },
+      {
+        "Feature": "Total Alkalinity_lag_1",
+        "Importance_%": 4.538444995880127
+      },
+      {
+        "Feature": "Latitude",
+        "Importance_%": 2.9064197540283203
+      },
+      {
+        "Feature": "NDMI",
+        "Importance_%": 2.5698907375335693
+      },
+      {
+        "Feature": "MNDWI",
+        "Importance_%": 2.4657340049743652
+      },
+      {
+        "Feature": "Longitude",
+        "Importance_%": 2.3125112056732178
+      },
+      {
+        "Feature": "Total Alkalinity_roll_med_7",
+        "Importance_%": 2.2990188598632812
+      }
+    ],
+    "num_features": 41,
+    "method": "XGBoost Gain-based Feature Importance"
+  },
+  "Electrical Conductance": {
+    "top_features": [
+      {
+        "Feature": "sin_doy",
+        "Importance_%": 19.398380279541016
+      },
+      {
+        "Feature": "cos_month",
+        "Importance_%": 14.182665824890137
+      },
+      {
+        "Feature": "Electrical Conductance_lag_1",
+        "Importance_%": 6.9290690422058105
+      },
+      {
+        "Feature": "sin_month",
+        "Importance_%": 5.68010950088501
+      },
+      {
+        "Feature": "cos_doy",
+        "Importance_%": 4.217809677124023
+      },
+      {
+        "Feature": "NDMI",
+        "Importance_%": 4.196976661682129
+      },
+      {
+        "Feature": "swir22",
+        "Importance_%": 3.995392084121704
+      },
+      {
+        "Feature": "Latitude",
+        "Importance_%": 3.905975818634033
+      },
+      {
+        "Feature": "green",
+        "Importance_%": 2.224524736404419
+      },
+      {
+        "Feature": "pet",
+        "Importance_%": 2.0613977909088135
+      }
+    ],
+    "num_features": 41,
+    "method": "XGBoost Gain-based Feature Importance"
+  },
+  "Dissolved Reactive Phosphorus": {
+    "top_features": [
+      {
+        "Feature": "cos_doy",
+        "Importance_%": 10.105527877807617
+      },
+      {
+        "Feature": "sin_doy",
+        "Importance_%": 8.522176742553711
+      },
+      {
+        "Feature": "sin_month",
+        "Importance_%": 7.37593412399292
+      },
+      {
+        "Feature": "Dissolved Reactive Phosphorus_lag_1",
+        "Importance_%": 4.827474594116211
+      },
+      {
+        "Feature": "cos_month",
+        "Importance_%": 4.575603485107422
+      },
+      {
+        "Feature": "Dissolved Reactive Phosphorus_lag_3",
+        "Importance_%": 4.161510467529297
+      },
+      {
+        "Feature": "Latitude",
+        "Importance_%": 3.3660483360290527
+      },
+      {
+        "Feature": "Dissolved Reactive Phosphorus_roll_std_3",
+        "Importance_%": 3.1128931045532227
+      },
+      {
+        "Feature": "Dissolved Reactive Phosphorus_roll_q25_7",
+        "Importance_%": 3.0698964595794678
+      },
+      {
+        "Feature": "Dissolved Reactive Phosphorus_roll_med_3",
+        "Importance_%": 2.971320867538452
+      }
+    ],
+    "num_features": 41,
+    "method": "XGBoost Gain-based Feature Importance"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "timestamp": "20260205_104034",
+  "samples": 200,
+  "targets": [
+    "Total Alkalinity",
+    "Electrical Conductance",
+    "Dissolved Reactive Phosphorus"
+  ],
+  "method": "Ensemble (XGB + LGB + QR)",
+  "training_results": {
+    "Total Alkalinity": {
+      "r2_ensemble": 0.9994625996699545,
+      "mae_ensemble": 0.7681619933983663,
+      "rmse_ensemble": 1.731423025772148
+    },
+    "Electrical Conductance": {
+      "r2_ensemble": 0.999946860771467,
+      "mae_ensemble": 1.6041961180637283,
+      "rmse_ensemble": 2.4924781037670027
+    },
+    "Dissolved Reactive Phosphorus": {
+      "r2_ensemble": 0.9998468011695422,
+      "mae_ensemble": 0.23687162422279526,
+      "rmse_ensemble": 0.6309659277037998
+    }
+  }
+}
