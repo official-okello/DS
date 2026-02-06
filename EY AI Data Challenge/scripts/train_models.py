@@ -32,7 +32,7 @@ if not features_path.exists():
     from src.preprocessing import cleaning, create_station_id
     from src.comprehensive_features import create_full_feature_set
     print("\n[1/3] Computing comprehensive features...")
-    raw_train = pd.read_csv(DATA_DIR / "raw/water_quality.csv")
+    raw_train = pd.read_csv(DATA_DIR / "water_quality_training_dataset.csv")
     raw_train['Sample Date'] = pd.to_datetime(raw_train['Sample Date'], format='mixed', dayfirst=True)
     raw_train = cleaning(raw_train)
     raw_train = create_station_id(raw_train)
