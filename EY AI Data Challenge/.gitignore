@@ -1,2 +1,4 @@
 run_smoke_test.py
 *.csv
+*.json
+*.pkl
