@@ -11,11 +11,7 @@ DATA_DIR = PROJECT_ROOT / "data"
 
 
 def add_spectral_indices(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Engineer spectral indices from raw Landsat bands.
-    
-    Available bands: nir (near-infrared), green, swir16 (shortwave), swir22
-    """
+    # Spectral indices from raw Landsat bands Available bands: nir (near-infrared), green, swir16 (shortwave), swir22
     df = df.copy()
     
     # Normalized Difference Vegetation Index (NDVI)
@@ -26,7 +22,7 @@ def add_spectral_indices(df: pd.DataFrame) -> pd.DataFrame:
         df['NDVI'] = (nir - green) / (nir + green + 1e-8)
         df['NDVI'] = df['NDVI'].clip(-1, 1)  # Bounds [-1, 1]
     
-    # Normalized Difference Moisture Index (NDMI) - already in data but useful for reference
+    # Normalized Difference Moisture Index (NDMI)
     # Higher = more water content in vegetation
     
     # Normalized Burn Ratio (NBR)
@@ -88,12 +84,7 @@ def add_spectral_indices(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_climate_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Engineer climate/weather features from TerrAClimate data.
-    
-    Current: pet (Potential EvapotransPiration)
-    Can add: precipitation lags, drought indices
-    """
+    # Climate/weather features from TerrAClimate data.
     df = df.copy()
     
     if 'pet' not in df.columns:
@@ -117,17 +108,13 @@ def add_climate_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_spatial_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Engineer spatial features from latitude/longitude.
-    """
+    # Engineer spatial features from latitude/longitude.
     df = df.copy()
     
     if 'Latitude' not in df.columns or 'Longitude' not in df.columns:
         return df
     
-    # Spatial clustering: lat/lon interactions
-    df['lat_lon_product'] = df['Latitude'] * df['Longitude']
-    df['lat_lon_sum'] = df['Latitude'] + df['Longitude']
+    # Spatial clustering: lat/lon interaction
     df['lat_lon_distance'] = np.sqrt(df['Latitude']**2 + df['Longitude']**2)
     
     # Distance from center (approximate center of study area)
@@ -135,20 +122,12 @@ def add_spatial_features(df: pd.DataFrame) -> pd.DataFrame:
     df['dist_from_center'] = np.sqrt((df['Latitude'] - center_lat)**2 + 
                                      (df['Longitude'] - center_lon)**2)
     
-    # Regional indicators (quadrants/zones)
-    df['latitude_zone'] = pd.cut(df['Latitude'], bins=4, labels=['south', 'south_mid', 'north_mid', 'north'])
-    df['longitude_zone'] = pd.cut(df['Longitude'], bins=4, labels=['west', 'west_mid', 'east_mid', 'east'])
-    df['latitude_zone'] = df['latitude_zone'].cat.codes
-    df['longitude_zone'] = df['longitude_zone'].cat.codes
-    
     return df
 
 
 def add_temporal_fourier_features(df: pd.DataFrame, date_col: str = "Sample Date", periods: list = None) -> pd.DataFrame:
-    """
-    Add Fourier features for multiple seasonal periods.
-    Better than just sin/cos for capturing complex seasonal patterns.
-    """
+    # Fourier features for multiple seasonal periods, for capturing complex seasonal patterns.
+    
     if periods is None:
         periods = [7, 30, 365]  # Weekly, monthly, yearly
     
@@ -168,10 +147,7 @@ def add_temporal_fourier_features(df: pd.DataFrame, date_col: str = "Sample Date
 
 def add_advanced_rolling_features(df: pd.DataFrame, target: str, groupby_col: str = "station_id", 
                                  windows: list = None, quantiles: list = None) -> pd.DataFrame:
-    """
-    Add advanced rolling statistics including skewness, kurtosis, range.
-    Useful for capturing data shape/distribution changes.
-    """
+    # Advanced rolling statistics including skewness, kurtosis, for capturing data shape/distribution changes.
     if windows is None:
         windows = [3, 7, 14, 30, 60]  # Extended windows
     if quantiles is None:
@@ -216,10 +192,7 @@ def add_advanced_rolling_features(df: pd.DataFrame, target: str, groupby_col: st
 
 
 def add_interaction_features(df: pd.DataFrame, targets: list = None) -> pd.DataFrame:
-    """
-    Add interaction features between different targets and spectral/climate data.
-    Useful for capturing cross-variable dependencies.
-    """
+    # Interaction features between different targets and spectral/climate data for capturing cross-variable dependencies.
     df = df.copy()
     if targets is None:
         targets = ['Total Alkalinity', 'Electrical Conductance', 'Dissolved Reactive Phosphorus']
@@ -250,10 +223,7 @@ def add_interaction_features(df: pd.DataFrame, targets: list = None) -> pd.DataF
 
 
 def add_derived_indices(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Add derived indices for water quality prediction.
-    Combines multiple features to create meaningful composite metrics.
-    """
+    # Derived indices for water quality prediction. Combines multiple features to create meaningful composite metrics.
     df = df.copy()
     
     # Land Surface Water Index (combines NDVI, NDWI, MNDWI)
@@ -280,9 +250,7 @@ def add_derived_indices(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def create_full_feature_set(df: pd.DataFrame, target: str = None, groupby_col: str = "station_id") -> pd.DataFrame:
-    """
-    Apply all feature engineering transformations in sequence.
-    """
+    # Apply all feature engineering transformations in sequence.
     print("Engineering spectral indices...")
     df = add_spectral_indices(df)
     

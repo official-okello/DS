@@ -12,8 +12,13 @@ from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 from sklearn.linear_model import QuantileRegressor
 from sklearn.multioutput import MultiOutputRegressor
 import json
+import matplotlib.pyplot as plt
+from sklearn.model_selection import KFold, learning_curve
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+import sys
+sys.path.insert(0, str(PROJECT_ROOT))
+
 DATA_DIR = PROJECT_ROOT / "data"
 MODELS_DIR = PROJECT_ROOT / "outputs/models"
 SUBMISSION_DIR = PROJECT_ROOT / "submissions"
@@ -26,9 +31,13 @@ print("="*80)
 print("INTEGRATED PIPELINE: FEATURE ENGINEERING + ENSEMBLE TRAINING")
 print("="*80)
 
-# Load features
+
+# Load engineered features
 features_path = DATA_DIR / "processed/comprehensive_features.csv"
-if not features_path.exists():
+if features_path.exists():
+    print("\n[1/3] Loading pre-computed features...")
+    df_engineered = pd.read_csv(features_path)
+else:
     from src.preprocessing import cleaning, create_station_id
     from src.comprehensive_features import create_full_feature_set
     print("\n[1/3] Computing comprehensive features...")
@@ -38,11 +47,49 @@ if not features_path.exists():
     raw_train = create_station_id(raw_train)
     df_engineered = create_full_feature_set(raw_train, target='Dissolved Reactive Phosphorus')
     df_engineered.to_csv(features_path, index=False)
+
+# Load PCA features from fetch_preprocess_external_features.py
+pca_features_path = PROJECT_ROOT / "EY AI Data Challenge/scripts/samples_with_pca_features.csv"
+if pca_features_path.exists():
+    print("[1b/3] Loading external PCA features...")
+    df_pca = pd.read_csv(pca_features_path)
+    # Merge on sample_id if available, else concat
+    if "sample_id" in df_pca.columns and "sample_id" in df_engineered.columns:
+        df_engineered = df_engineered.merge(df_pca, on="sample_id", how="left", suffixes=("", "_pca"))
+    else:
+        # If no sample_id, just concat columns (assume same order)
+        df_engineered = pd.concat([df_engineered, df_pca], axis=1)
+    print(f"Features shape after PCA merge: {df_engineered.shape}")
 else:
-    print("\n[1/3] Loading pre-computed features...")
-    df_engineered = pd.read_csv(features_path)
+    print("[1b/3] PCA features not found, skipping external PCA merge.")
 
 print(f"Features shape: {df_engineered.shape}")
+
+# Temporal encoding for Sample Date
+if 'Sample Date' in df_engineered.columns:
+    df_engineered['Sample Date'] = pd.to_datetime(df_engineered['Sample Date'], errors='coerce')
+    df_engineered['year'] = df_engineered['Sample Date'].dt.year
+    df_engineered['month'] = df_engineered['Sample Date'].dt.month
+    df_engineered['dayofyear'] = df_engineered['Sample Date'].dt.dayofyear
+    df_engineered['sin_dayofyear'] = np.sin(2 * np.pi * df_engineered['dayofyear'] / 365)
+    df_engineered['cos_dayofyear'] = np.cos(2 * np.pi * df_engineered['dayofyear'] / 365)
+
+# K-Fold CV and Learning Curve for DRP/XGB/LGB
+def plot_learning_curve(estimator, X, y, title):
+    train_sizes, train_scores, test_scores = learning_curve(
+        estimator, X, y, cv=5, scoring='r2', n_jobs=-1, train_sizes=np.linspace(0.1, 1.0, 5))
+    train_scores_mean = np.mean(train_scores, axis=1)
+    test_scores_mean = np.mean(test_scores, axis=1)
+    plt.figure()
+    plt.title(title)
+    plt.xlabel("Training examples")
+    plt.ylabel("R² Score")
+    plt.plot(train_sizes, train_scores_mean, 'o-', color="r", label="Training score")
+    plt.plot(train_sizes, test_scores_mean, 'o-', color="g", label="Cross-validation score")
+    plt.legend(loc="best")
+    plt.grid()
+    plt.tight_layout()
+    plt.show()
 
 # Feature selection function
 def prepare_features_for_target(df, target):
@@ -101,17 +148,26 @@ if drop_nanmedian:
 # Fill remaining NaNs with median values
 X_train = X_train.fillna(medians)
 
-# Split training data into train/test for evaluation
-from sklearn.model_selection import train_test_split
-X_tr, X_test, y_tr, y_test = train_test_split(
-    X_train, y_train, test_size=0.2, random_state=42
-)
-
-print(f"  Train samples: {X_tr.shape[0]} | Test samples: {X_test.shape[0]}")
+# Time-based train/test split
+if 'Sample Date' in df_train.columns:
+    df_train = df_train.sort_values('Sample Date')
+    split_idx = int(0.8 * len(df_train))
+    X_train = df_train[X_cols][:split_idx]
+    y_train = df_train[TARGETS][:split_idx]
+    X_test = df_train[X_cols][split_idx:]
+    y_test = df_train[TARGETS][split_idx:]
+    print(f"  Time-based split: Train samples: {X_train.shape[0]} | Test samples: {X_test.shape[0]}")
+else:
+    # fallback to random split
+    from sklearn.model_selection import train_test_split
+    X_train, X_test, y_train, y_test = train_test_split(
+        df_train[X_cols], df_train[TARGETS], test_size=0.2, random_state=42
+    )
+    print(f"  Random split: Train samples: {X_train.shape[0]} | Test samples: {X_test.shape[0]}")
 
 # Scale features (fit on train portion only)
 scaler = StandardScaler()
-X_tr_scaled = scaler.fit_transform(X_tr)
+X_train_scaled = scaler.fit_transform(X_train)
 X_test_scaled = scaler.transform(X_test)
 
 # Train global XGBoost (multi-output)
@@ -119,74 +175,128 @@ from sklearn.multioutput import MultiOutputRegressor as _MOR
 xgb_base = xgb.XGBRegressor(
     n_estimators=300, max_depth=6, learning_rate=0.05,
     subsample=0.8, colsample_bytree=0.8,
+    reg_alpha=2.0, reg_lambda=4.0,  # Stronger regularization
     objective="reg:squarederror", random_state=42, n_jobs=-1, verbosity=0
 )
 global_xgb = _MOR(xgb_base)
-global_xgb.fit(X_tr_scaled, y_tr)
+global_xgb.fit(X_train_scaled, y_train)
 joblib.dump(global_xgb, MODELS_DIR / "xgb_global.pkl")
 
+# K-Fold CV for XGB
+kf = KFold(n_splits=5, shuffle=True, random_state=42)
+xgb_cv_scores = []
+for train_idx, test_idx in kf.split(X_train):
+    xgb_cv = xgb.XGBRegressor(
+        n_estimators=100, max_depth=4, learning_rate=0.1,
+        subsample=0.7, colsample_bytree=0.7,
+        reg_alpha=2.0, reg_lambda=4.0,
+        objective="reg:squarederror", random_state=42, n_jobs=-1, verbosity=0
+    )
+    xgb_cv.fit(X_train.iloc[train_idx], y_train['Dissolved Reactive Phosphorus'].iloc[train_idx],
+              verbose=0)
+    score = xgb_cv.score(X_train.iloc[test_idx], y_train['Dissolved Reactive Phosphorus'].iloc[test_idx])
+    xgb_cv_scores.append(score)
+print(f"XGB DRP K-Fold CV R²: {np.mean(xgb_cv_scores):.4f}")
+plot_learning_curve(xgb_base, X_train_scaled, y_train['Dissolved Reactive Phosphorus'], "XGB DRP Learning Curve")
 # Train global LightGBM (multi-output)
 import lightgbm as lgb
 lgb_base = lgb.LGBMRegressor(
     n_estimators=300, max_depth=7, learning_rate=0.05,
     num_leaves=31, subsample=0.8, colsample_bytree=0.8,
+    reg_alpha=2.0, reg_lambda=4.0,  # Stronger regularization
     random_state=42, n_jobs=-1, verbosity=-1
 )
 global_lgb = _MOR(lgb_base)
-global_lgb.fit(X_tr_scaled, y_tr)
+global_lgb.fit(X_train_scaled, y_train)
 joblib.dump(global_lgb, MODELS_DIR / "lgb_global.pkl")
 
+# K-Fold CV for LGB
+lgb_cv_scores = []
+for train_idx, test_idx in kf.split(X_train):
+    lgb_cv = lgb.LGBMRegressor(
+        n_estimators=100, max_depth=4, learning_rate=0.1,
+        num_leaves=15, subsample=0.7, colsample_bytree=0.7,
+        reg_alpha=2.0, reg_lambda=4.0,
+        random_state=42, n_jobs=-1, verbosity=-1
+    )
+    lgb_cv.fit(X_train.iloc[train_idx], y_train['Dissolved Reactive Phosphorus'].iloc[train_idx],
+              eval_set=[(X_train.iloc[test_idx], y_train['Dissolved Reactive Phosphorus'].iloc[test_idx])])
+    score = lgb_cv.score(X_train.iloc[test_idx], y_train['Dissolved Reactive Phosphorus'].iloc[test_idx])
+    lgb_cv_scores.append(score)
+print(f"LGB DRP K-Fold CV R²: {np.mean(lgb_cv_scores):.4f}")
+plot_learning_curve(lgb_base, X_train_scaled, y_train['Dissolved Reactive Phosphorus'], "LGB DRP Learning Curve")
 # Train separate, simplified models specifically for DRP to improve generalization
-drp_y_tr = y_tr['Dissolved Reactive Phosphorus']
+drp_y_train = y_train['Dissolved Reactive Phosphorus']
+
 
 # Feature selection for DRP: use feature importance from global XGB
 xgb_importance = global_xgb.estimators_[2].feature_importances_  # Index 2 is DRP in multi-output
-top_feature_indices = np.argsort(xgb_importance)[-50:]  # Top 50 features
-X_tr_drp = X_tr_scaled[:, top_feature_indices]
+top_feature_indices = np.argsort(xgb_importance)[-100:]  # Top 100 features (was 50)
+X_train_drp = X_train_scaled[:, top_feature_indices]
+print(f"  DRP feature selection: {len(top_feature_indices)} features (from {X_train_scaled.shape[1]})")
 
-print(f"  DRP feature selection: {len(top_feature_indices)} features (from {X_tr_scaled.shape[1]})")
 
-# Train simplified, regularized XGBoost for DRP
+# Tuned XGBoost for DRP (more features, relaxed regularization, more trees)
 xgb_drp = xgb.XGBRegressor(
-    n_estimators=150, max_depth=4, learning_rate=0.1,  # Reduced depth & increased lr
-    subsample=0.7, colsample_bytree=0.7,  # Increased dropout
-    reg_alpha=1.0, reg_lambda=2.0,  # L1/L2 regularization
+    n_estimators=100, max_depth=4, learning_rate=0.01,  # More trees, deeper
+    subsample=0.7, colsample_bytree=0.7,  # Less dropout
+    reg_alpha=4.0, reg_lambda=8.0,  # Relaxed regularization
     objective="reg:squarederror", random_state=42, n_jobs=-1, verbosity=0
 )
-xgb_drp.fit(X_tr_drp, drp_y_tr)
-joblib.dump({'model': xgb_drp, 'feature_indices': top_feature_indices}, 
+X_test_drp = X_test_scaled[:, top_feature_indices]
+drp_y_test = y_test['Dissolved Reactive Phosphorus']
+xgb_drp.fit(X_train_drp, drp_y_train, eval_set=[(X_test_drp, drp_y_test)])
+joblib.dump({'model': xgb_drp, 'feature_indices': top_feature_indices},
              MODELS_DIR / "xgb_drp_model.pkl")
 
-# Train simplified, regularized LightGBM for DRP
+
+# Tuned LightGBM for DRP (more features, relaxed regularization, more trees)
 lgb_drp = lgb.LGBMRegressor(
-    n_estimators=150, max_depth=4, learning_rate=0.1,  # Reduced depth & increased lr
-    num_leaves=15, subsample=0.7, colsample_bytree=0.7,  # Reduced leaves, increased dropout
-    reg_alpha=1.0, reg_lambda=2.0,  # L1/L2 regularization
+    n_estimators=100, max_depth=4, learning_rate=0.01,  # More trees, deeper
+    num_leaves=7, subsample=0.7, colsample_bytree=0.7,  # Less dropout
+    reg_alpha=4.0, reg_lambda=8.0,  # Relaxed regularization
     random_state=42, n_jobs=-1, verbosity=-1
 )
-lgb_drp.fit(X_tr_drp, drp_y_tr)
-joblib.dump({'model': lgb_drp, 'feature_indices': top_feature_indices}, 
+lgb_drp.fit(X_train_drp, drp_y_train, eval_set=[(X_test_drp, drp_y_test)])
+joblib.dump({'model': lgb_drp, 'feature_indices': top_feature_indices},
              MODELS_DIR / "lgb_drp_model.pkl")
 
-# Quantile regressors for DRP with strong regularization
+# Impute NaNs in DRP feature subset for QuantileRegressor
+X_train_drp_qr = X_train_drp.copy()
+if np.isnan(X_train_drp_qr).any():
+    # Fill NaNs with column median
+    medians = np.nanmedian(X_train_drp_qr, axis=0)
+    inds = np.where(np.isnan(X_train_drp_qr))
+    X_train_drp_qr[inds] = np.take(medians, inds[1])
+
+
+# Quantile regressors for DRP with moderate regularization
 qr_models = {}
 for q in [0.25, 0.5, 0.75]:
-    qr = QuantileRegressor(quantile=q, alpha=5.0, solver='highs')  # Increased alpha for regularization
-    qr.fit(X_tr_drp, drp_y_tr)
+    qr = QuantileRegressor(quantile=q, alpha=2.0, solver='highs')  # Relaxed alpha
+    qr.fit(X_train_drp_qr, drp_y_train)
     qr_models[q] = qr
     joblib.dump({'model': qr, 'feature_indices': top_feature_indices}, 
                  MODELS_DIR / f"qr_drp_model_q{int(q*100)}.pkl")
 
 # Evaluate on train set
-pred_xgb_tr = pd.DataFrame(global_xgb.predict(X_tr_scaled), columns=TARGETS)
-pred_lgb_tr = pd.DataFrame(global_lgb.predict(X_tr_scaled), columns=TARGETS)
+pred_xgb_tr = pd.DataFrame(global_xgb.predict(X_train_scaled), columns=TARGETS)
+pred_lgb_tr = pd.DataFrame(global_lgb.predict(X_train_scaled), columns=TARGETS)
 pred_ens_tr = 0.5 * pred_xgb_tr + 0.5 * pred_lgb_tr
 
 # DRP predictions use specialized regularized models
-X_tr_drp_subset = X_tr_scaled[:, top_feature_indices]
-pred_drp_xgb_tr = xgb_drp.predict(X_tr_drp_subset)
-pred_drp_lgb_tr = lgb_drp.predict(X_tr_drp_subset)
-pred_drp_qr_tr = qr_models[0.5].predict(X_tr_drp_subset)
+X_train_drp_subset = X_train_scaled[:, top_feature_indices]
+
+# Impute NaNs in DRP feature subset for QuantileRegressor predictions (train)
+X_train_drp_subset_qr = X_train_drp_subset.copy()
+if np.isnan(X_train_drp_subset_qr).any():
+    medians = np.nanmedian(X_train_drp_subset_qr, axis=0)
+    inds = np.where(np.isnan(X_train_drp_subset_qr))
+    X_train_drp_subset_qr[inds] = np.take(medians, inds[1])
+
+pred_drp_xgb_tr = xgb_drp.predict(X_train_drp_subset)
+pred_drp_lgb_tr = lgb_drp.predict(X_train_drp_subset)
+pred_drp_qr_tr = qr_models[0.5].predict(X_train_drp_subset_qr)
 
 pred_ens_tr['Dissolved Reactive Phosphorus'] = (
     0.45 * pred_drp_xgb_tr + 0.45 * pred_drp_lgb_tr + 0.10 * pred_drp_qr_tr
@@ -199,9 +309,17 @@ pred_ens_test = 0.5 * pred_xgb_test + 0.5 * pred_lgb_test
 
 # DRP predictions use specialized regularized models
 X_test_drp_subset = X_test_scaled[:, top_feature_indices]
+
+# Impute NaNs in DRP feature subset for QuantileRegressor predictions (test)
+X_test_drp_subset_qr = X_test_drp_subset.copy()
+if np.isnan(X_test_drp_subset_qr).any():
+    medians = np.nanmedian(X_test_drp_subset_qr, axis=0)
+    inds = np.where(np.isnan(X_test_drp_subset_qr))
+    X_test_drp_subset_qr[inds] = np.take(medians, inds[1])
+
 pred_drp_xgb_test = xgb_drp.predict(X_test_drp_subset)
 pred_drp_lgb_test = lgb_drp.predict(X_test_drp_subset)
-pred_drp_qr_test = qr_models[0.5].predict(X_test_drp_subset)
+pred_drp_qr_test = qr_models[0.5].predict(X_test_drp_subset_qr)
 
 pred_ens_test['Dissolved Reactive Phosphorus'] = (
     0.45 * pred_drp_xgb_test + 0.45 * pred_drp_lgb_test + 0.10 * pred_drp_qr_test
@@ -210,9 +328,9 @@ pred_ens_test['Dissolved Reactive Phosphorus'] = (
 results = {}
 print("\n  Train Set Metrics:")
 for t in TARGETS:
-    r2_tr = r2_score(y_tr[t], pred_ens_tr[t])
-    mae_tr = mean_absolute_error(y_tr[t], pred_ens_tr[t])
-    rmse_tr = np.sqrt(mean_squared_error(y_tr[t], pred_ens_tr[t]))
+    r2_tr = r2_score(y_train[t], pred_ens_tr[t])
+    mae_tr = mean_absolute_error(y_train[t], pred_ens_tr[t])
+    rmse_tr = np.sqrt(mean_squared_error(y_train[t], pred_ens_tr[t]))
     print(f"    {t}: R²={r2_tr:.4f} | MAE={mae_tr:.4f} | RMSE={rmse_tr:.4f}")
 
 print("\n  Test Set Metrics:")
@@ -221,9 +339,9 @@ for t in TARGETS:
     mae_test = mean_absolute_error(y_test[t], pred_ens_test[t])
     rmse_test = np.sqrt(mean_squared_error(y_test[t], pred_ens_test[t]))
     
-    r2_tr = r2_score(y_tr[t], pred_ens_tr[t])
-    mae_tr = mean_absolute_error(y_tr[t], pred_ens_tr[t])
-    rmse_tr = np.sqrt(mean_squared_error(y_tr[t], pred_ens_tr[t]))
+    r2_tr = r2_score(y_train[t], pred_ens_tr[t])
+    mae_tr = mean_absolute_error(y_train[t], pred_ens_tr[t])
+    rmse_tr = np.sqrt(mean_squared_error(y_train[t], pred_ens_tr[t]))
     
     results[t] = {
         "r2_train": r2_tr, "mae_train": mae_tr, "rmse_train": rmse_tr,
@@ -270,21 +388,32 @@ try:
     # Import feature engineering functions
     from src.comprehensive_features import create_full_feature_set
     print("  Computing engineered features for validation data...")
-    
     # Apply same feature engineering pipeline
     df_val_engineered = create_full_feature_set(val_raw, target='Dissolved Reactive Phosphorus')
+    # Check for column mismatch
+    mismatched = set(X_cols) - set(df_val_engineered.columns)
+    if mismatched:
+        print(f"  [Validation Feature Engineering] Mismatched columns: {sorted(mismatched)}")
 except Exception as e:
-    print(f"  Warning: Could not engineer features ({e}). Using raw features only.")
-    df_val_engineered = val_raw
+    print(f"  [FAIL] Could not engineer features ({e}). Fallback to raw features is not allowed.")
+    raise RuntimeError("Validation feature engineering failed. Fallback to raw features is not permitted.")
+
 
 # Extract features matching training feature names
 val_features = pd.DataFrame(index=df_val_engineered.index)
+missing_cols = []
 for col in X_cols:
     if col in df_val_engineered.columns:
         val_features[col] = df_val_engineered[col]
     else:
-        # Fill missing engineered features with training median
         val_features[col] = np.nan
+        missing_cols.append(col)
+
+# Print and warn about missing columns
+if missing_cols:
+    print(f"[Validation] {len(missing_cols)} missing columns will be imputed: {missing_cols}")
+    if len(missing_cols) > 10:
+        print(f"[Validation][WARNING] More than 10 features missing in validation! Model performance may degrade.")
 
 # Fill NaNs with training medians
 for col in val_features.columns:
@@ -304,15 +433,20 @@ pred_val = 0.5 * pred_xgb_val + 0.5 * pred_lgb_val
 
 # DRP predictions use specialized regularized models
 val_drp_subset = val_scaled[:, top_feature_indices]
+# Impute NaNs in val_drp_subset for QuantileRegressor
+val_drp_subset_qr = val_drp_subset.copy()
+if np.isnan(val_drp_subset_qr).any():
+    medians = np.nanmedian(val_drp_subset_qr, axis=0)
+    inds = np.where(np.isnan(val_drp_subset_qr))
+    val_drp_subset_qr[inds] = np.take(medians, inds[1])
+
 pred_drp_xgb_val = xgb_drp.predict(val_drp_subset)
 pred_drp_lgb_val = lgb_drp.predict(val_drp_subset)
-pred_drp_qr_val = qr_models[0.5].predict(val_drp_subset)
+pred_drp_qr_val = qr_models[0.5].predict(val_drp_subset_qr)
 
 pred_val['Dissolved Reactive Phosphorus'] = (
     0.45 * pred_drp_xgb_val + 0.45 * pred_drp_lgb_val + 0.10 * pred_drp_qr_val
 )
-
-# Build final submission with template structure
 submission_df = pd.DataFrame({
     'Latitude': df_sub['Latitude'].values,
     'Longitude': df_sub['Longitude'].values,
