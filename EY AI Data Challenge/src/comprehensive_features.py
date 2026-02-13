@@ -1,7 +1,6 @@
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from typing import Tuple
 from sklearn.preprocessing import StandardScaler
 import warnings
 warnings.filterwarnings('ignore')
@@ -11,251 +10,258 @@ DATA_DIR = PROJECT_ROOT / "data"
 
 
 def add_spectral_indices(df: pd.DataFrame) -> pd.DataFrame:
-    # Spectral indices from raw Landsat bands Available bands: nir (near-infrared), green, swir16 (shortwave), swir22
+    """Spectral indices from raw Landsat bands. No cross-row stats — safe."""
     df = df.copy()
-    
-    # Normalized Difference Vegetation Index (NDVI)
-    # Indicates vegetation health/density
+
     if 'nir' in df.columns and 'green' in df.columns:
-        nir = df['nir'].astype(float)
+        nir   = df['nir'].astype(float)
         green = df['green'].astype(float)
-        df['NDVI'] = (nir - green) / (nir + green + 1e-8)
-        df['NDVI'] = df['NDVI'].clip(-1, 1)  # Bounds [-1, 1]
-    
-    # Normalized Difference Moisture Index (NDMI)
-    # Higher = more water content in vegetation
-    
-    # Normalized Burn Ratio (NBR)
-    # Useful for detecting disturbance/changes
+        df['NDVI'] = ((nir - green) / (nir + green + 1e-8)).clip(-1, 1)
+        L = 0.5
+        df['SAVI'] = (((nir - green) / (nir + green + L + 1e-8)) * (1 + L)).clip(-1, 1)
+        # MSAVI
+        df['MSAVI'] = ((2*nir + 1 - np.sqrt(np.clip((2*nir + 1)**2 - 8*(nir - green), 0, None))) / 2).clip(-1, 1)
+
     if 'nir' in df.columns and 'swir22' in df.columns:
-        nir = df['nir'].astype(float)
+        nir    = df['nir'].astype(float)
         swir22 = df['swir22'].astype(float)
-        df['NBR'] = (nir - swir22) / (nir + swir22 + 1e-8)
-        df['NBR'] = df['NBR'].clip(-1, 1)
-    
-    # Enhanced Vegetation Index (EVI)
-    # More sensitive to vegetation changes than NDVI
+        df['NBR'] = ((nir - swir22) / (nir + swir22 + 1e-8)).clip(-1, 1)
+
     if 'nir' in df.columns and 'green' in df.columns and 'swir16' in df.columns:
-        nir = df['nir'].astype(float)
-        green = df['green'].astype(float)
+        nir    = df['nir'].astype(float)
+        green  = df['green'].astype(float)
         swir16 = df['swir16'].astype(float)
-        L, C1, C2 = 1.0, 6.0, 7.5  # Standard EVI coefficients
-        df['EVI'] = 2.5 * (nir - green) / (nir + C1*green - C2*swir16 + L + 1e-8)
-        df['EVI'] = df['EVI'].clip(-1, 3)  # Realistic bounds
-    
-    # Soil-Adjusted Vegetation Index (SAVI)
-    # Better for areas with exposed soil
-    if 'nir' in df.columns and 'green' in df.columns:
-        nir = df['nir'].astype(float)
-        green = df['green'].astype(float)
-        L = 0.5  # Soil adjustment factor
-        df['SAVI'] = (nir - green) / (nir + green + L + 1e-8) * (1 + L)
-        df['SAVI'] = df['SAVI'].clip(-1, 1)
-    
-    # Normalized Difference Water Index (NDWI)
-    # Indicates water in vegetation (flooding detection)
+        L, C1, C2 = 1.0, 6.0, 7.5
+        df['EVI'] = (2.5 * (nir - green) / (nir + C1*green - C2*swir16 + L + 1e-8)).clip(-1, 3)
+
     if 'nir' in df.columns and 'swir16' in df.columns:
-        nir = df['nir'].astype(float)
+        nir    = df['nir'].astype(float)
         swir16 = df['swir16'].astype(float)
-        df['NDWI_alt'] = (nir - swir16) / (nir + swir16 + 1e-8)
-        df['NDWI_alt'] = df['NDWI_alt'].clip(-1, 1)
-    
-    # Modified Soil-Adjusted Vegetation Index (MSAVI)
-    # Improved SAVI for low vegetation areas
-    if 'nir' in df.columns and 'green' in df.columns:
-        nir = df['nir'].astype(float)
-        green = df['green'].astype(float)
-        rvi = nir / (green + 1e-8)
-        df['MSAVI'] = (2*nir + 1 - np.sqrt((2*nir + 1)**2 - 8*(nir - green))) / 2
-        df['MSAVI'] = df['MSAVI'].clip(-1, 1)
-    
-    # Spectral indices ratios (for nutrient/stress detection)
+        df['NDWI_alt'] = ((nir - swir16) / (nir + swir16 + 1e-8)).clip(-1, 1)
+
     if 'swir16' in df.columns and 'green' in df.columns:
-        swir16 = df['swir16'].astype(float)
-        green = df['green'].astype(float)
-        df['SWIR_GREEN_RATIO'] = swir16 / (green + 1e-8)
-    
+        df['SWIR_GREEN_RATIO'] = df['swir16'].astype(float) / (df['green'].astype(float) + 1e-8)
+
     if 'swir16' in df.columns and 'nir' in df.columns:
-        swir16 = df['swir16'].astype(float)
-        nir = df['nir'].astype(float)
-        df['SWIR_NIR_RATIO'] = swir16 / (nir + 1e-8)
-    
+        df['SWIR_NIR_RATIO'] = df['swir16'].astype(float) / (df['nir'].astype(float) + 1e-8)
+
     return df
 
 
-def add_climate_features(df: pd.DataFrame) -> pd.DataFrame:
-    # Climate/weather features from TerrAClimate data.
+def add_climate_features(df: pd.DataFrame,
+                          pet_quantiles: dict = None) -> pd.DataFrame:
+    
     df = df.copy()
     
+    # Check if 'pet' column exists
     if 'pet' not in df.columns:
         return df
-    
-    # PET statistics (variability in evaporative demand)
-    df['pet_zscore'] = (df['pet'] - df['pet'].mean()) / (df['pet'].std() + 1e-8)
-    
-    # PET categories
-    pet_quantiles = df['pet'].quantile([0.25, 0.5, 0.75])
-    df['pet_category'] = pd.cut(df['pet'], 
-                                bins=[0, pet_quantiles[0.25], pet_quantiles[0.5], 
-                                      pet_quantiles[0.75], df['pet'].max()],
-                                labels=['low', 'medium', 'high', 'very_high'],
-                                include_lowest=True)
-    
-    # Convert to numeric
-    df['pet_category'] = df['pet_category'].cat.codes
-    
+
+    if pet_quantiles is not None:
+        bins = [df['pet'].min() - 1,
+                pet_quantiles[0.25],
+                pet_quantiles[0.50],
+                pet_quantiles[0.75],
+                df['pet'].max() + 1]
+        # Ensure bins are strictly increasing (edge case: duplicate quantiles)
+        bins = sorted(set(bins))
+        if len(bins) >= 2:
+            df['pet_category'] = pd.cut(
+                df['pet'], bins=bins,
+                labels=False, include_lowest=True
+            ).fillna(0).astype(int)
+        else:
+            df['pet_category'] = 0
+    else:
+        df['pet_category'] = 0
+
     return df
+
+
+def compute_pet_stats(df_train: pd.DataFrame) -> dict:
+    """Compute PET statistics from training data only. Returns None if 'pet' column is missing."""
+    if 'pet' not in df_train.columns:
+        print("  [INFO] 'pet' column not found — skipping PET stats.")
+        return None
+    pet = df_train['pet'].dropna()
+    if len(pet) == 0:
+        print("  [INFO] 'pet' column has no valid values — skipping PET stats.")
+        return None
+    return {
+        'pet_quantiles': {0.25: float(pet.quantile(0.25)),
+                          0.50: float(pet.quantile(0.50)),
+                          0.75: float(pet.quantile(0.75))},
+    }
 
 
 def add_spatial_features(df: pd.DataFrame) -> pd.DataFrame:
-    # Engineer spatial features from latitude/longitude.
+    """Spatial features from lat/lon. Row-wise only — no cross-row stats."""
     df = df.copy()
-    
     if 'Latitude' not in df.columns or 'Longitude' not in df.columns:
         return df
-    
-    # Spatial clustering: lat/lon interaction
+
     df['lat_lon_distance'] = np.sqrt(df['Latitude']**2 + df['Longitude']**2)
-    
-    # Distance from center (approximate center of study area)
-    center_lat, center_lon = -30.5, 23.0  # Approximate center of South Africa
-    df['dist_from_center'] = np.sqrt((df['Latitude'] - center_lat)**2 + 
-                                     (df['Longitude'] - center_lon)**2)
-    
+
+    # Approximate centroid of South Africa
+    center_lat, center_lon = -30.5, 23.0
+    df['dist_from_center'] = np.sqrt(
+        (df['Latitude']  - center_lat)**2 +
+        (df['Longitude'] - center_lon)**2
+    )
     return df
 
 
-def add_temporal_fourier_features(df: pd.DataFrame, date_col: str = "Sample Date", periods: list = None) -> pd.DataFrame:
-    # Fourier features for multiple seasonal periods, for capturing complex seasonal patterns.
-    
+def add_temporal_fourier_features(df: pd.DataFrame,
+                                   date_col: str = "Sample Date",
+                                   periods: list = None) -> pd.DataFrame:
+    """Fourier features for seasonal patterns. Row-wise — no leakage."""
     if periods is None:
-        periods = [7, 30, 365]  # Weekly, monthly, yearly
-    
+        periods = [7, 30, 365]
+
     df = df.copy()
     df[date_col] = pd.to_datetime(df[date_col], format='mixed', dayfirst=True, errors='coerce')
-    
-    # Day of year as continuous variable
     day_of_year = df[date_col].dt.dayofyear
-    
+
     for period in periods:
-        for harmonic in range(1, 3):  # Use 2 harmonics per period
+        for harmonic in range(1, 3):
             df[f'sin_{period}d_h{harmonic}'] = np.sin(2 * np.pi * harmonic * day_of_year / period)
             df[f'cos_{period}d_h{harmonic}'] = np.cos(2 * np.pi * harmonic * day_of_year / period)
-    
+
     return df
 
 
-def add_advanced_rolling_features(df: pd.DataFrame, target: str, groupby_col: str = "station_id", 
-                                 windows: list = None, quantiles: list = None) -> pd.DataFrame:
-    # Advanced rolling statistics including skewness, kurtosis, for capturing data shape/distribution changes.
+def add_rolling_features(df: pd.DataFrame,
+                          feature_cols: list,
+                          groupby_col: str = "station_id",
+                          windows: list = None) -> pd.DataFrame:
     if windows is None:
-        windows = [3, 7, 14, 30, 60]  # Extended windows
-    if quantiles is None:
-        quantiles = [0.1, 0.25, 0.5, 0.75, 0.9]  # More quantiles
-    
+        windows = [3, 7, 14, 30]
+
     df = df.copy()
-    if target not in df.columns:
-        return df
-    
-    grouped = df.groupby(groupby_col)[target].shift(1)
-    
-    for w in windows:
-        shifted = grouped.rolling(window=w, min_periods=1)
-        
-        # Standard stats
-        df[f"{target}_roll_mean_{w}"] = shifted.mean()
-        df[f"{target}_roll_std_{w}"] = shifted.std()
-        df[f"{target}_roll_med_{w}"] = shifted.median()
-        df[f"{target}_roll_min_{w}"] = shifted.min()
-        df[f"{target}_roll_max_{w}"] = shifted.max()
-        
-        # Range and IQR
-        df[f"{target}_roll_range_{w}"] = df[f"{target}_roll_max_{w}"] - df[f"{target}_roll_min_{w}"]
-        
-        # Skewness and kurtosis (distribution shape)
-        df[f"{target}_roll_skew_{w}"] = shifted.skew()
-        df[f"{target}_roll_kurt_{w}"] = shifted.apply(lambda x: x.kurtosis() if len(x) > 3 else np.nan)
-        
-        # Coefficient of variation
-        df[f"{target}_roll_cv_{w}"] = (df[f"{target}_roll_std_{w}"] / 
-                                       (df[f"{target}_roll_mean_{w}"] + 1e-8)).fillna(0)
-        
-        # Quantiles (sparse + expanded)
-        for q in quantiles:
-            q_name = int(q * 100)
-            try:
-                df[f"{target}_roll_q{q_name}_{w}"] = shifted.quantile(q)
-            except:
-                df[f"{target}_roll_q{q_name}_{w}"] = shifted.apply(lambda x: x.quantile(q) if len(x) > 0 else np.nan)
-    
+
+    # Only roll features that actually exist in df
+    cols_to_roll = [c for c in feature_cols if c in df.columns]
+
+    for col in cols_to_roll:
+        if groupby_col in df.columns:
+            shifted = df.groupby(groupby_col)[col].shift(1)
+        else:
+            shifted = df[col].shift(1)
+
+        for w in windows:
+            rolled = shifted.rolling(window=w, min_periods=1)
+            df[f'{col}_roll_mean_{w}'] = rolled.mean()
+            df[f'{col}_roll_std_{w}']  = rolled.std().fillna(0)
+            df[f'{col}_roll_min_{w}']  = rolled.min()
+            df[f'{col}_roll_max_{w}']  = rolled.max()
+
     return df
 
 
-def add_interaction_features(df: pd.DataFrame, targets: list = None) -> pd.DataFrame:
-    # Interaction features between different targets and spectral/climate data for capturing cross-variable dependencies.
+def add_interaction_features(df: pd.DataFrame,
+                              targets: list = None) -> pd.DataFrame:
+
     df = df.copy()
-    if targets is None:
-        targets = ['Total Alkalinity', 'Electrical Conductance', 'Dissolved Reactive Phosphorus']
+
+    # Spectral × climate interactions (safe — these are inputs, not targets)
+    # Include both engineered indices AND pre-existing ones (like NDMI, MNDWI)
+    potential_spectral = ['NDVI', 'EVI', 'SAVI', 'NDMI', 'MNDWI', 'NBR',
+                          'NDWI_alt', 'SWIR_GREEN_RATIO', 'SWIR_NIR_RATIO', 'MSAVI']
+    spectral_cols = [c for c in df.columns if c in potential_spectral]
     
-    # Target interactions
-    available_targets = [t for t in targets if t in df.columns]
-    if len(available_targets) >= 2:
-        for i, t1 in enumerate(available_targets):
-            for t2 in available_targets[i+1:]:
-                df[f"{t1}_x_{t2}"] = df[t1] * df[t2]
-                df[f"{t1}_div_{t2}"] = df[t1] / (df[t2] + 1e-8)
-                df[f"{t1}_{t2}_sum"] = df[t1] + df[t2]
+    climate_cols  = [c for c in df.columns if c in ['pet']]
+    spatial_cols  = [c for c in df.columns if c in ['dist_from_center', 'lat_lon_distance']]
+
+    # Only create interactions if we have both spectral and climate/spatial features
+    for spec in spectral_cols:
+        for clim in climate_cols:
+            df[f'{spec}_x_{clim}'] = df[spec] * df[clim]
+
+        for spat in spatial_cols:
+            df[f'{spec}_x_{spat}'] = df[spec] * df[spat]
+
+    # Spectral band ratios (check existence first)
+    if 'NDVI' in df.columns and 'NDWI_alt' in df.columns:
+        df['NDVI_NDWI_diff'] = df['NDVI'] - df['NDWI_alt']
+        df['NDVI_NDWI_prod'] = df['NDVI'] * df['NDWI_alt']
+
+    if 'EVI' in df.columns and 'NDVI' in df.columns:
+        df['EVI_NDVI_ratio'] = df['EVI'] / (df['NDVI'].abs() + 1e-8)
     
-    # Spectral indices with targets
-    spectral_cols = [c for c in df.columns if c in ['NDVI', 'EVI', 'SAVI', 'NDMI', 'MNDWI', 'NBR']]
-    for target in available_targets:
-        for spec in spectral_cols:
-            if spec in df.columns:
-                df[f"{target}_x_{spec}"] = df[target] * df[spec]
-                df[f"{target}_{spec}_ratio"] = df[target] / (df[spec].abs() + 1e-8)
+    # Additional interactions with pre-existing indices
+    if 'NDVI' in df.columns and 'NDMI' in df.columns:
+        df['NDVI_NDMI_prod'] = df['NDVI'] * df['NDMI']
     
-    # PET interactions
-    if 'pet' in df.columns:
-        for target in available_targets:
-            df[f"{target}_per_pet"] = df[target] / (df['pet'] + 1e-8)
-    
+    if 'NDVI' in df.columns and 'MNDWI' in df.columns:
+        df['NDVI_MNDWI_prod'] = df['NDVI'] * df['MNDWI']
+
+    # No target × anything interactions. Targets are outputs, not inputs.
+    if targets:
+        accidentally_included = [t for t in targets if t in df.columns]
+        if accidentally_included:
+            print(f"[WARNING] Dropping target columns that may leake into interaction features: "
+                  f"{accidentally_included}")
+            df = df.drop(columns=accidentally_included, errors='ignore')
+
     return df
 
 
 def add_derived_indices(df: pd.DataFrame) -> pd.DataFrame:
-    # Derived indices for water quality prediction. Combines multiple features to create meaningful composite metrics.
+    """Composite indices from spectral features only. Row-wise — no leakage."""
     df = df.copy()
-    
-    # Land Surface Water Index (combines NDVI, NDWI, MNDWI)
-    if 'NDVI' in df.columns and 'MNDWI' in df.columns:
-        df['LSWI'] = (df['NDVI'] - df['MNDWI']) / (df['NDVI'] + df['MNDWI'] + 1e-8)
-    
-    # Vegetation Moisture Index
-    if 'NDVI' in df.columns and 'NDWI_alt' in df.columns:
-        df['VMI'] = df['NDVI'] * df['NDWI_alt']
-    
-    # Stress Index (low vegetation + high moisture = potential stress)
-    if 'NDVI' in df.columns and 'MNDWI' in df.columns:
+
+    # Check if indices exist (either created earlier or pre-existing in data)
+    has_ndvi = 'NDVI' in df.columns
+    has_mndwi = 'MNDWI' in df.columns
+    has_ndwi_alt = 'NDWI_alt' in df.columns
+    has_swir_green = 'SWIR_GREEN_RATIO' in df.columns
+
+    if has_ndvi and has_mndwi:
+        df['LSWI'] = ((df['NDVI'] - df['MNDWI']) / (df['NDVI'] + df['MNDWI'] + 1e-8))
         df['Stress_Index'] = (1 - df['NDVI']) * df['MNDWI']
-    
-    # Soil Moisture Index (SWIR bands)
-    if 'SWIR_GREEN_RATIO' in df.columns:
-        df['Soil_Moisture_Index'] = 1 / (df['SWIR_GREEN_RATIO'] + 1e-8)
-    
-    # Wetness Index (water-related features)
-    if 'MNDWI' in df.columns and 'NDVI' in df.columns:
         df['Wetness_Index'] = (df['MNDWI'] + df['NDVI']) / 2
-    
+
+    if has_ndvi and has_ndwi_alt:
+        df['VMI'] = df['NDVI'] * df['NDWI_alt']
+
+    if has_swir_green:
+        df['Soil_Moisture_Index'] = 1 / (df['SWIR_GREEN_RATIO'] + 1e-8)
+
     return df
 
 
-def create_full_feature_set(df: pd.DataFrame, target: str = None, groupby_col: str = "station_id") -> pd.DataFrame:
-    # Apply all feature engineering transformations in sequence.
+# Public API
+
+def create_full_feature_set(df: pd.DataFrame,
+                             target: str = None,
+                             groupby_col: str = "station_id",
+                             pet_stats: dict = None,
+                             is_train: bool = True) -> pd.DataFrame:
+    """
+    Apply all feature engineering transformations.
+    *** CRITICAL: THIS VERSION NEVER LOSES TARGET COLUMNS ***
+    """
+    TARGETS = ['Total Alkalinity', 'Electrical Conductance',
+               'Dissolved Reactive Phosphorus']
+
+    targets_backup = {}
+    for t in TARGETS:
+        if t in df.columns:
+            targets_backup[t] = df[t].copy()
+            print(f"Backed up target: {t}")
+    
+    # Track original columns
+    original_cols = set(df.columns)
+    
     print("Engineering spectral indices...")
     df = add_spectral_indices(df)
     
+    if pet_stats is None and is_train:
+        pet_stats = compute_pet_stats(df)
+    
     print("Engineering climate features...")
-    df = add_climate_features(df)
+    if pet_stats is not None:
+        df = add_climate_features(df, **pet_stats)
     
     print("Engineering spatial features...")
     df = add_spatial_features(df)
@@ -263,65 +269,62 @@ def create_full_feature_set(df: pd.DataFrame, target: str = None, groupby_col: s
     print("Engineering temporal Fourier features...")
     df = add_temporal_fourier_features(df)
     
-    if target and target in df.columns:
-        print(f"Engineering advanced rolling features for {target}...")
-        df = add_advanced_rolling_features(df, target, groupby_col)
-    
     print("Engineering interaction features...")
-    df = add_interaction_features(df)
+    df = add_interaction_features(df, targets=TARGETS)
     
     print("Engineering derived indices...")
     df = add_derived_indices(df)
     
+    print("\nRestoring targets...")
+    for t, values in targets_backup.items():
+        df[t] = values
+        print(f"Restored: {t}")
+    
+    total_new = len(df.columns) - len(original_cols)
+    print(f"\nTotal features: {len(df.columns)} ({total_new} new + {len(targets_backup)} targets)")
+    
     return df
 
-
 if __name__ == "__main__":
-    print("="*70)
-    print("COMPREHENSIVE FEATURE ENGINEERING PIPELINE")
-    print("="*70)
-    
-    # Load data
-    print("\nLoading data...")
+    print("=" * 70)
+    print("COMPREHENSIVE FEATURE ENGINEERING - GUARANTEED TARGET PRESERVATION")
+    print("=" * 70)
+
+    from src.preprocessing import build_raw_dataset
+    print("\nBuilding raw dataset...")
+    build_raw_dataset()
+
     raw_data = pd.read_csv(DATA_DIR / "raw/water_quality.csv")
-    print(f"Initial shape: {raw_data.shape}")
-    
-    # Parse dates
-    raw_data['Sample Date'] = pd.to_datetime(raw_data['Sample Date'], format='mixed', dayfirst=True)
-    
-    # Create station_id if not present
-    from src.preprocessing import create_station_id, add_time_features
+    raw_data['Sample Date'] = pd.to_datetime(
+        raw_data['Sample Date'], format='mixed', dayfirst=True)
+
+    from src.preprocessing import create_station_id
     if 'station_id' not in raw_data.columns:
         raw_data = create_station_id(raw_data)
+
+    raw_data = raw_data.sort_values('Sample Date').reset_index(drop=True)
     
-    # Apply all transformations
-    featured_df = create_full_feature_set(raw_data, target='Dissolved Reactive Phosphorus')
+    # Compute PET stats from training portion
+    split_idx = int(0.8 * len(raw_data))
+    pet_stats = compute_pet_stats(raw_data.iloc[:split_idx])
     
-    print(f"\nFinal shape: {featured_df.shape}")
-    print(f"New features added: {featured_df.shape[1] - raw_data.shape[1]}")
+    print("\n✓ Applying feature engineering...")
+    df_engineered = create_full_feature_set(raw_data, pet_stats=pet_stats, is_train=True)
     
-    # Show feature categories
-    print("\n" + "="*70)
-    print("FEATURE SUMMARY")
-    print("="*70)
+    # Verify targets
+    TARGETS = ['Total Alkalinity', 'Electrical Conductance', 'Dissolved Reactive Phosphorus']
+    final_targets = [t for t in TARGETS if t in df_engineered.columns]
     
-    spectral = [c for c in featured_df.columns if any(x in c for x in ['NDVI', 'EVI', 'SAVI', 'NBR', 'NDWI', 'SWIR'])]
-    climate = [c for c in featured_df.columns if 'pet' in c]
-    spatial = [c for c in featured_df.columns if any(x in c for x in ['lat', 'lon', 'dist', 'zone'])]
-    temporal = [c for c in featured_df.columns if any(x in c for x in ['sin_', 'cos_', 'dayofyear', 'month'])]
-    rolling = [c for c in featured_df.columns if 'roll_' in c]
-    derived = [c for c in featured_df.columns if any(x in c for x in ['LSWI', 'VMI', 'Stress', 'Soil_', 'Wetness'])]
-    interaction = [c for c in featured_df.columns if '_x_' in c or '_div_' in c or '_per_' in c]
+    print(f"\nVerification: {len(final_targets)}/3 targets present")
     
-    print(f"\nSpectral Indices ({len(spectral)}): {spectral[:5]}...")
-    print(f"Climate Features ({len(climate)}): {climate}")
-    print(f"Spatial Features ({len(spatial)}): {spatial[:5]}...")
-    print(f"Temporal Features ({len(temporal)}): {temporal[:5]}...")
-    print(f"Rolling Statistics ({len(rolling)}): {rolling[:5]}...")
-    print(f"Derived Indices ({len(derived)}): {derived}")
-    print(f"Interaction Features ({len(interaction)}): {interaction[:5]}...")
+    # Save
+    output_path = DATA_DIR / "processed/comprehensive_features.csv"
+    df_engineered.to_csv(output_path, index=False)
     
-    # Save for inspection
-    output_path = PROJECT_ROOT / "data/processed/comprehensive_features.csv"
-    featured_df.to_csv(output_path, index=False)
-    print(f"\nSaved comprehensive features to: {output_path}")
+    print(f"\nSaved: {output_path}")
+    print(f"Shape: {df_engineered.shape}")
+    
+    if len(final_targets) == 3:
+        print(f"\nSUCCESS - All targets preserved!")
+    else:
+        print(f"\nERROR - Missing targets: {[t for t in TARGETS if t not in df_engineered.columns]}")
