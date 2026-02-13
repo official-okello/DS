@@ -8,6 +8,9 @@ import joblib
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
+MODELS_DIR = PROJECT_ROOT / "outputs/models"
+MODELS_DIR.mkdir(parents=True, exist_ok=True)
+
 
 print("=" * 80)
 print("EXTERNAL FEATURE ENGINEERING")
@@ -106,9 +109,9 @@ joblib.dump(
         "feature_cols": feature_cols,
         "n_components": n_components
     },
-    out_dir / "pca_pipeline.pkl"
+    MODELS_DIR / "pca_pipeline.pkl"
 )
-print(f"Saved: {out_dir / 'pca_pipeline.pkl'}")
+print(f"Saved: {MODELS_DIR / 'pca_pipeline.pkl'}")
 
 print("\n" + "=" * 80)
 print("EXTERNAL FEATURES PROCESSING PIPELINE COMPLETED")
@@ -127,7 +130,7 @@ Summary:
 
 def transform_validation_data(val_samples: pd.DataFrame) -> pd.DataFrame:
     """Transform validation data using train-fitted pipeline."""
-    pipeline = joblib.load(out_dir / "pca_pipeline.pkl")
+    pipeline = joblib.load(MODELS_DIR / "pca_pipeline.pkl")
     scaler_ = pipeline["scaler"]
     pca_ = pipeline["pca"]
     feat_cols_ = pipeline["feature_cols"]

@@ -93,7 +93,6 @@ def compute_pet_stats(df_train: pd.DataFrame) -> dict:
                           0.75: float(pet.quantile(0.75))},
     }
 
-
 def add_spatial_features(df: pd.DataFrame) -> pd.DataFrame:
     """Spatial features from lat/lon. Row-wise only — no cross-row stats."""
     df = df.copy()
